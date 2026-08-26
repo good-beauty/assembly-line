@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+pyyaml
+requests
+python-multipart
+jinja2
+allure-pytest
+pytest
+python-dotenv
+dashscope

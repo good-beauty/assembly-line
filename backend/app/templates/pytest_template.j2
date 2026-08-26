@@ -1,0 +1,10 @@
+import requests
+import json
+
+def test_{{ test_case.name }}():
+    url = "{{ test_case.url }}"
+    headers = {{ test_case.headers }}
+    payload = {{ test_case.payload }}
+    method = "{{ test_case.method | lower }}"
+    response = requests.request(method, url, headers=headers, json=payload)
+    assert response.status_code == {{ test_case.expected_status }}

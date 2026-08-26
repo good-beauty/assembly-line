@@ -1,0 +1,10 @@
+{
+  "yaml.schemas": {
+    ".vscode/compose-spec.json": [
+      "docker-compose.yml",
+      "docker-compose.yaml",
+      "compose.yml",
+      "compose.yaml"
+    ]
+  }
+}
