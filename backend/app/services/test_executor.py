@@ -15,7 +15,7 @@ load_dotenv()
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), '..', 'templates')
-ALLURE_CMD = r"D:\allure\allure-2.45.0\bin\allure.bat"
+ALLURE_CMD = os.getenv("ALLURE_CMD", "allure")
 ALLURE_RESULTS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-results')
 REPORT_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-report')
 
