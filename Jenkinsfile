@@ -2,16 +2,10 @@ pipeline {
     agent any
 
     stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main', url: 'https://github.com/yourname/test-pipeline.git'
-            }
-        }
-
         stage('Build & Deploy') {
             steps {
                 script {
-                    // 如果容器未启动，则构建并启动
+                    // 构建并启动容器
                     sh 'docker compose up -d --build'
                 }
             }
@@ -38,7 +32,6 @@ pipeline {
         stage('Notify') {
             steps {
                 script {
-                    // 可选：发送钉钉通知，后续第7周实现
                     echo 'Pipeline completed successfully!'
                 }
             }
