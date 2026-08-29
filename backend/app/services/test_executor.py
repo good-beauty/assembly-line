@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
+IN_DOCKER = os.getenv("IN_DOCKER", "false").lower() == "true"
+BASE_URL = "http://mock:5000" if IN_DOCKER else "http://localhost:5000"
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), '..', 'templates')
 ALLURE_CMD = os.getenv("ALLURE_CMD", "allure")
 ALLURE_RESULTS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-results')

@@ -1,5 +1,6 @@
 import sys
 import os
+from app.services.notifier import send_dingtalk_notification
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.database import SessionLocal
@@ -51,6 +52,9 @@ def run_full_pipeline(swagger_url: str):
         print("[4/4] 生成 Allure 报告...")
         # 报告已在 execute_tests 内部生成到 backend/allure-report
         print("  报告已生成，请打开 backend/allure-report/index.html 查看")
+        # ... 在生成报告后
+        print("[5/5] 发送钉钉通知...")
+        send_dingtalk_notification(summary, report_path="backend/allure-report/index.html")
 
         return summary
     finally:
