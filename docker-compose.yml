@@ -31,6 +31,7 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://root:root@mysql:3306/test_pipeline?charset=utf8mb4
       BASE_URL: http://mock:5000
+      IN_DOCKER: "true"
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_MODEL: ${LLM_MODEL}
       DINGTALK_WEBHOOK: ${DINGTALK_WEBHOOK}
