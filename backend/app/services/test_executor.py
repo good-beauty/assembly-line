@@ -16,7 +16,14 @@ load_dotenv()
 IN_DOCKER = os.getenv("IN_DOCKER", "false").lower() == "true"
 BASE_URL = "http://mock:5000" if IN_DOCKER else "http://localhost:5000"
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), '..', 'templates')
-ALLURE_CMD = os.getenv("ALLURE_CMD", "allure")
+
+# 优先使用宿主机上的 allure.bat（如果存在），否则认为在容器内使用 allure 命令
+_windows_allure = r"D:\allure\allure-2.45.0\bin\allure.bat"
+if os.path.exists(_windows_allure):
+    ALLURE_CMD = _windows_allure
+else:
+    ALLURE_CMD = "allure"
+    
 ALLURE_RESULTS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-results')
 REPORT_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-report')
 
