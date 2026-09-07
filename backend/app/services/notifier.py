@@ -9,7 +9,7 @@ DINGTALK_WEBHOOK = os.getenv("DINGTALK_WEBHOOK", "")
 def send_dingtalk_notification(summary: dict, report_path: str = ""):
     """发送测试结果到钉钉群"""
     if not DINGTALK_WEBHOOK:
-        print("未配置 DINGTALK_WEBHOOK，跳过通知")
+        print("未配置 DINGTALK_WEBHOOK,跳过通知")
         return
 
     # 构造 Markdown 消息
@@ -21,14 +21,14 @@ def send_dingtalk_notification(summary: dict, report_path: str = ""):
     success_rate = (passed / total * 100) if total > 0 else 0
 
     markdown_text = f"""### 接口自动化测试流水线执行完成
-    - **流水线总用例数**：{total}
-    - **通过**：{passed}
-    - **失败**：{failed}
-    - **错误**：{error}
-    - **跳过**：{skipped}
-    - **通过率**：{success_rate:.2f}%
+    - **流水线总用例数**:{total}
+    - **通过**:{passed}
+    - **失败**:{failed}
+    - **错误**:{error}
+    - **跳过**:{skipped}
+    - **通过率**:{success_rate:.2f}%
 
-    **报告地址**：{report_path}
+    **报告地址**:{report_path}
     """
 
     payload = {
