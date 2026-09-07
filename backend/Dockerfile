@@ -8,8 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Allure
-RUN curl -sL https://github.com/allure-framework/allure2/releases/download/2.30.0/allure-2.30.0.tgz | tar -xz -C /opt/ \
-    && ln -s /opt/allure-2.30.0/bin/allure /usr/local/bin/allure
+# 复制本地 Allure 压缩包
+COPY allure-2.30.0.tgz /tmp/allure-2.30.0.tgz
+
+# 解压并配置
+RUN tar -xzf /tmp/allure-2.30.0.tgz -C /opt/ \
+    && ln -s /opt/allure-2.30.0/bin/allure /usr/local/bin/allure \
+    && rm /tmp/allure-2.30.0.tgz
 
 # 设置工作目录
 WORKDIR /app

@@ -13,10 +13,9 @@ dashscope.api_key = os.getenv("LLM_API_KEY")
 MODEL_NAME = os.getenv("LLM_MODEL", "qwen-plus")
 
 # ========== Prompt 模板 ==========
-PROMPT_TEMPLATE = """
-你是一名资深测试开发工程师，擅长根据接口定义设计全面的测试用例。
-
-请根据以下接口信息，生成 **5 条** 测试用例，覆盖正常场景和常见异常场景（如参数缺失、非法值、边界值等）。
+# 正向用例 Prompt（只生成正常请求，预期 200）
+POSITIVE_PROMPT_TEMPLATE = """
+你是一名资深测试开发工程师，请根据以下接口信息生成 **3 条** 正向测试用例，只覆盖正常请求场景。
 
 接口信息：
 - 方法: {method}
@@ -26,43 +25,64 @@ PROMPT_TEMPLATE = """
 - 请求体: {request_body}
 - 响应: {responses}
 
+已知可用的资源 ID(请优先使用):
+- pets: id = 1, 2, 3
+- orders: id = 1, 2, 3
+- users: username = "user1", "alice", "bob"
+
 要求：
-1. 每个测试用例必须是一个 JSON 对象，包含以下字段：
-   - "name": 测试用例名称（简短描述测试场景）
-   - "method": HTTP 方法（如 GET、POST 等）
-   - "url": 请求 URL(路径中的占位符如 {{petId}} 保留，可替换为具体值)
-   - "headers": 请求头 JSON 对象(如 {{"Content-Type": "application/json"}})
-   - "payload": 请求体 JSON 对象(GET 请求可为空 {{}})
-   - "expected_status": 预期 HTTP 状态码（整数）
-   - "assertions": 断言列表，每个断言是一个 JSON 对象，包含 "type"（如 "jsonpath", "contains", "equals"）和 "value"（期望值或表达式）
-2. 所有输出必须是一个合法的 JSON 数组，不要包含任何额外文字或注释。
-3. 确保 JSON 格式正确，可以被 Python 的 json.loads 解析。
-4、只生成正常请求的测试用例,所有测试用例的预期状态码必须是 200。请勿生成异常场景(如参数缺失、非法值)。
-5、在生成 URL 时，请将路径中的占位符（如 {petId}、{orderId}、{username} 等）替换为具体的示例值（例如数字 1 或字符串 "test"）。不要保留花括号。
-请直接输出 JSON 数组。
+1. 每个测试用例必须是一个 JSON 对象,包含字段:name, method, url, headers, payload, expected_status, assertions。
+2. expected_status 必须为 200。
+3. 在生成 URL 时，将路径占位符（如 {petId}、{orderId}、{username}）替换为上面列出的具体值（例如宠物 ID 用 1,订单 ID 用 1,用户名用 "user1"）。
+4. 请求体(payload)必须包含该接口所需的全部必填字段（请参考接口信息中的 parameters 和 requestBody,例如 name 和 photoUrls、username 和 email 等）。
+5. 只输出合法的 JSON 数组，不要包含任何额外文字或注释。
 """
 
-def generate_cases_for_endpoint(endpoint) -> List[Dict]:
-    """调用大模型，为单个接口生成测试用例"""
-    # 构造 Prompt
-    prompt = PROMPT_TEMPLATE
-    prompt = prompt.replace('{method}', endpoint.method)
-    prompt = prompt.replace('{path}', endpoint.path)
-    prompt = prompt.replace('{summary}', endpoint.summary or '')
-    prompt = prompt.replace('{parameters}', json.dumps(endpoint.parameters, ensure_ascii=False) if endpoint.parameters else '无')
-    prompt = prompt.replace('{request_body}', json.dumps(endpoint.request_body, ensure_ascii=False) if endpoint.request_body else '无')
-    prompt = prompt.replace('{responses}', json.dumps(endpoint.responses, ensure_ascii=False) if endpoint.responses else '无')
+# 负向用例 Prompt（生成 2 条异常场景，预期 4xx）
+NEGATIVE_PROMPT_TEMPLATE = """
+你是一名资深测试开发工程师，请根据以下接口信息生成 **2 条** 负向测试用例，覆盖常见的参数错误场景。
 
-    # 调用 DashScope
+接口信息：
+- 方法: {method}
+- 路径: {path}
+- 摘要: {summary}
+- 参数: {parameters}
+- 请求体: {request_body}
+- 响应: {responses}
+
+已知可用的资源 ID(供参考，但负向用例应使用无效值来触发错误):
+- pets: id = 1, 2, 3
+- orders: id = 1, 2, 3
+- users: username = "user1", "alice", "bob"
+
+要求：
+1. 每个测试用例必须是一个 JSON 对象,包含字段:name, method, url, headers, payload, expected_status, assertions。
+2. expected_status 必须是 4xx(400、404、422 等)，且应与实际可能返回的错误状态码一致。
+3. 生成的负向用例应只聚焦于以下一种错误场景：
+   - 路径参数为负数、0 或非数字字符串(如 /pet/-1、/pet/abc)
+   - 缺少必需的查询参数(如 findByStatus 不带 status)
+   - 请求体缺少必填字段(如创建宠物时不提供 name 或 photoUrls)
+   - 字段类型错误或非法枚举值(如 status 传 "unknown")
+4. 不要使用已存在的合法 ID 作为负向用例（因为那样会返回 200,不是 4xx)。
+5. 在生成 URL 时，将路径占位符替换为具体无效值（例如 petId 用 -1 或 abc,username 用空字符串）。
+6. 只输出合法的 JSON 数组，不要包含任何额外文字或注释。
+"""
+
+def fill_prompt(template: str, params: Dict) -> str:
+    """安全地替换模板中的占位符，避免花括号冲突"""
+    for key, value in params.items():
+        template = template.replace("{" + key + "}", str(value))
+    return template
+
+def call_llm_and_parse(prompt: str) -> List[Dict]:
+    """调用大模型并解析返回的 JSON 数组"""
     response = Generation.call(
         model=MODEL_NAME,
         prompt=prompt,
-        result_format='message',  # 使用消息格式
+        result_format='message',
         max_tokens=2000,
-        temperature=0.2,          # 较低温度使输出更稳定
+        temperature=0.2,
     )
-
-    # 提取输出文本
     if response.status_code == 200:
         output_text = response.output.choices[0].message.content
     else:
@@ -78,24 +98,19 @@ def generate_cases_for_endpoint(endpoint) -> List[Dict]:
         # 尝试提取数组部分
         match = re.search(r'\[.*\]', cleaned, re.DOTALL)
         if match:
-            try:
-                cases = json.loads(match.group(0))
-            except json.JSONDecodeError:
-                raise Exception("无法解析模型输出为 JSON 数组")
+            cases = json.loads(match.group(0))
         else:
-            raise Exception("模型输出中未找到 JSON 数组")
+            raise Exception("无法解析模型输出为 JSON 数组")
 
-    # 校验并规范化
     valid_cases = []
     for case in cases:
         if not isinstance(case, dict):
             continue
-        # 确保必要字段存在
         if all(k in case for k in ["name", "method", "url", "expected_status"]):
             valid_cases.append({
                 "name": case["name"],
-                "method": case.get("method", endpoint.method),
-                "url": case.get("url", endpoint.path),
+                "method": case.get("method"),
+                "url": case.get("url"),
                 "headers": case.get("headers", {}),
                 "payload": case.get("payload", {}),
                 "expected_status": int(case.get("expected_status", 200)),
@@ -103,3 +118,25 @@ def generate_cases_for_endpoint(endpoint) -> List[Dict]:
                 "model_used": MODEL_NAME
             })
     return valid_cases
+
+def generate_cases_for_endpoint(endpoint) -> List[Dict]:
+    """调用大模型，为单个接口生成测试用例"""
+    # 构造 Prompt
+    params = {
+        "method": endpoint.method,
+        "path": endpoint.path,
+        "summary": endpoint.summary or "",
+        "parameters": json.dumps(endpoint.parameters, ensure_ascii=False) if endpoint.parameters else "无",
+        "request_body": json.dumps(endpoint.request_body, ensure_ascii=False) if endpoint.request_body else "无",
+        "responses": json.dumps(endpoint.responses, ensure_ascii=False) if endpoint.responses else "无"
+    }
+
+    # 生成正向用例
+    positive_prompt = fill_prompt(POSITIVE_PROMPT_TEMPLATE, params)
+    positive_cases = call_llm_and_parse(positive_prompt)
+
+    # 生成负向用例
+    negative_prompt = fill_prompt(NEGATIVE_PROMPT_TEMPLATE, params)
+    negative_cases = call_llm_and_parse(negative_prompt)
+
+    return positive_cases + negative_cases
