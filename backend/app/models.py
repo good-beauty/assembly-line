@@ -22,7 +22,7 @@ class TestCase(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     api_id = Column(Integer, ForeignKey("api_endpoints.id"))
-    name = Column(String(255))
+    name = Column(String(1000))
     method = Column(String(10))
     url = Column(String(500))
     headers = Column(JSON, nullable=True)

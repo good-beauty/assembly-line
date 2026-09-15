@@ -3,7 +3,7 @@ FROM docker.m.daocloud.io/library/python:3.11-slim
 WORKDIR /app
 
 # 复制依赖（mock 服务只需要 fastapi 和 uvicorn）
-RUN pip install --no-cache-dir fastapi uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn python-multipart
 
 # 复制代码
 COPY main.py .
