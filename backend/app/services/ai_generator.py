@@ -12,10 +12,76 @@ load_dotenv()  # 加载 .env 文件中的环境变量
 dashscope.api_key = os.getenv("LLM_API_KEY")
 MODEL_NAME = os.getenv("LLM_MODEL", "qwen-plus")
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+SPEC_PATH = os.getenv("SPEC_PATH", os.path.join(PROJECT_ROOT, "specs", "petstore.json"))
+_spec_cache = None
+
+def load_spec():
+    global _spec_cache
+    if _spec_cache is None:
+        with open(SPEC_PATH, "r", encoding="utf-8") as f:
+            _spec_cache = json.load(f)
+    return _spec_cache
+
+def get_examples_from_spec(method: str, path: str) -> Dict:
+    """从 OpenAPI 文档提取该接口的示例和约束"""
+    spec = load_spec()
+    paths = spec.get("paths", {})
+    path_item = paths.get(path, {})
+    operation = path_item.get(method.lower(), {})
+    
+    constraints = {
+        "required_fields": [],
+        "path_params": [],
+        "query_params": [],
+        "success_example": {},
+        "error_responses": []
+    }
+    
+    # 提取参数
+    all_params = path_item.get("parameters", []) + operation.get("parameters", [])
+    for p in all_params:
+        pname = p.get("name")
+        if p.get("in") == "path":
+            constraints["path_params"].append(pname)
+        elif p.get("in") == "query":
+            constraints["query_params"].append(pname)
+        if p.get("required"):
+            constraints["required_fields"].append(pname)
+    
+    # 提取请求体必填字段
+    rb = operation.get("requestBody", {})
+    if rb:
+        for ct_data in rb.get("content", {}).values():
+            schema = ct_data.get("schema", {})
+            if "required" in schema:
+                constraints["required_fields"].extend(schema["required"])
+    
+    # 提取成功响应示例
+    responses = operation.get("responses", {})
+    for code in ["200", "201"]:
+        if code in responses:
+            content = responses[code].get("content", {})
+            for ct_data in content.values():
+                schema = ct_data.get("schema", {})
+                if "example" in schema:
+                    constraints["success_example"] = schema["example"]
+                    break
+    
+    # 提取错误响应
+    for code, resp in responses.items():
+        if code.startswith("4"):
+            constraints["error_responses"].append({
+                "status": int(code),
+                "description": resp.get("description", "")
+            })
+    
+    return constraints
 # ========== Prompt 模板 ==========
 # 正向用例 Prompt（只生成正常请求，预期 200）
 POSITIVE_PROMPT_TEMPLATE = """
-你是一名资深测试开发工程师，请根据以下接口信息生成 **3 条** 正向测试用例，只覆盖正常请求场景。
+你是一名资深测试开发工程师，请根据以下接口信息生成 **3 条** 正向测试用例。
 
 接口信息：
 - 方法: {method}
@@ -25,17 +91,37 @@ POSITIVE_PROMPT_TEMPLATE = """
 - 请求体: {request_body}
 - 响应: {responses}
 
-已知可用的资源 ID(请优先使用):
-- pets: id = 1, 2, 3
-- orders: id = 1, 2, 3
-- users: username = "user1", "alice", "bob"
+硬性约束
+1. 所有用例的 `expected_status` 必须是 `200`。
+2. 路径参数必须替换为具体值（例如 `/pet/1`），优先使用已存在的 ID:`1`、`2`、`3`。
+3. 请求体必须包含所有必填字段：`{required_fields}`。
+4. 成功响应示例参考：`{success_example}`。
+5. 用户相关操作只能使用：`user1`、`alice`、`bob`。
+   登录凭据只能使用：
+   - `user1` / `pass123`
+   - `alice` / `alicepass`
+   - `bob` / `bobpass`
+6. `name` 字段只写简短标题（不超过 30 字），不要包含推理过程、解释或换行。
+7. 只输出合法 JSON 数组，不要包含任何额外文字、注释或 Markdown 代码块。
 
-要求：
-1. 每个测试用例必须是一个 JSON 对象,包含字段:name, method, url, headers, payload, expected_status, assertions。
-2. expected_status 必须为 200。
-3. 在生成 URL 时，将路径占位符（如 {petId}、{orderId}、{username}）替换为上面列出的具体值（例如宠物 ID 用 1,订单 ID 用 1,用户名用 "user1"）。
-4. 请求体(payload)必须包含该接口所需的全部必填字段（请参考接口信息中的 parameters 和 requestBody,例如 name 和 photoUrls、username 和 email 等）。
-5. 只输出合法的 JSON 数组，不要包含任何额外文字或注释。
+禁止事项（违反会导致 Mock 无法匹配）
+- 不要在 `PUT /pet` 后添加路径参数（正确写法：`PUT /pet`）。
+- 不要在 `POST /pet` 后添加路径参数（`POST /pet/{petId}` 仅用于表单更新）。
+- 不要生成以 `/user/` 结尾的 URL(username 必须非空)。
+- 不要生成不存在的路由（如 `POST /pet/{petId}/someRandomPath`）。
+- 不要使用 `{required_fields}` 等占位符，请求体必须含真实字段值。
+- 不要把请求体嵌套在 `{"body": ...}` 中，直接传 JSON 对象或数组。
+- 不要生成 `/store/inventory/{{id}}` 这类带路径参数的 URL(inventory 无路径参数)。
+- 不要生成 `/user/logout/{{something}}` 这类 URL(logout 无路径参数)。
+- 不要生成 trailing slash(如 `/user/user1/`)。
+- 请求体缺字段时，`expected_status` 只能写 `400` 或 `422`，禁止写 `405`。
+- 路径参数非法时，`expected_status` 只能写 `400`，禁止写 `405`。
+
+输出格式
+每条用例必须包含以下字段：
+`name`, `method`, `url`, `headers`, `payload`, `expected_status`, `assertions`
+
+请直接输出 JSON 数组。
 """
 
 # 负向用例 Prompt（生成 2 条异常场景，预期 4xx）
@@ -49,23 +135,41 @@ NEGATIVE_PROMPT_TEMPLATE = """
 - 参数: {parameters}
 - 请求体: {request_body}
 - 响应: {responses}
+- 可用的错误响应: {error_responses}
 
-已知可用的资源 ID(供参考，但负向用例应使用无效值来触发错误):
-- pets: id = 1, 2, 3
-- orders: id = 1, 2, 3
-- users: username = "user1", "alice", "bob"
+硬性约束
+1. `expected_status` 必须是上面「可用的错误响应」中列出的状态码之一。
+2. 只生成以下类型的错误用例：
+   - 路径参数为非数字、负数或 `0`(如 `/pet/abc`、`/pet/-1`)
+   - 缺少必填查询参数
+   - 请求体缺少必填字段
+3. 用户相关操作只能使用：`user1`、`alice`、`bob`。
+   登录凭据只能使用：
+   - `user1` / `pass123`
+   - `alice` / `alicepass`
+   - `bob` / `bobpass`
+4. `name` 字段只写简短标题（不超过 30 字），不要包含推理过程、解释或换行。
+5. 只输出合法 JSON 数组，不要包含任何额外文字、注释或 Markdown 代码块。
 
-要求：
-1. 每个测试用例必须是一个 JSON 对象,包含字段:name, method, url, headers, payload, expected_status, assertions。
-2. expected_status 必须是 4xx(400、404、422 等)，且应与实际可能返回的错误状态码一致。
-3. 生成的负向用例应只聚焦于以下一种错误场景：
-   - 路径参数为负数、0 或非数字字符串(如 /pet/-1、/pet/abc)
-   - 缺少必需的查询参数(如 findByStatus 不带 status)
-   - 请求体缺少必填字段(如创建宠物时不提供 name 或 photoUrls)
-   - 字段类型错误或非法枚举值(如 status 传 "unknown")
-4. 不要使用已存在的合法 ID 作为负向用例（因为那样会返回 200,不是 4xx)。
-5. 在生成 URL 时，将路径占位符替换为具体无效值（例如 petId 用 -1 或 abc,username 用空字符串）。
-6. 只输出合法的 JSON 数组，不要包含任何额外文字或注释。
+禁止事项(违反会导致 Mock 无法匹配)
+- 不要在 `PUT /pet` 后添加路径参数（正确写法：`PUT /pet`）。
+- 不要在 `POST /pet` 后添加路径参数（`POST /pet/{petId}` 仅用于表单更新）。
+- 不要生成以 `/user/` 结尾的 URL(username 必须非空，例如 `/user/abc`)。
+- 不要生成不存在的路由（如 `POST /pet/{petId}/someRandomPath`）。
+- 不要使用 `{required_fields}` 等占位符，请求体必须含真实字段值。
+- 不要把请求体嵌套在 `{"body": ...}` 中，直接传 JSON 对象或数组。
+- 不要生成 `/store/inventory/{{id}}` 这类带路径参数的 URL(inventory 无路径参数)。
+- 不要生成 `/user/logout/{{something}}` 这类 URL(logout 无路径参数)。
+- 不要生成 trailing slash(如 `/user/user1/`)。
+- 不要生成空路径（如 `/user/`）。
+- 请求体缺字段时，`expected_status` 只能写 `400` 或 `422`，禁止写 `405`。
+- 路径参数非法时，`expected_status` 只能写 `400`，禁止写 `405`。
+
+输出格式
+每条用例必须包含以下字段：
+`name`, `method`, `url`, `headers`, `payload`, `expected_status`, `assertions`
+
+请直接输出 JSON 数组。
 """
 
 def fill_prompt(template: str, params: Dict) -> str:
@@ -108,7 +212,7 @@ def call_llm_and_parse(prompt: str) -> List[Dict]:
             continue
         if all(k in case for k in ["name", "method", "url", "expected_status"]):
             valid_cases.append({
-                "name": case["name"],
+                "name": case["name"][:150],
                 "method": case.get("method"),
                 "url": case.get("url"),
                 "headers": case.get("headers", {}),
@@ -121,6 +225,7 @@ def call_llm_and_parse(prompt: str) -> List[Dict]:
 
 def generate_cases_for_endpoint(endpoint) -> List[Dict]:
     """调用大模型，为单个接口生成测试用例"""
+    constraints = get_examples_from_spec(endpoint.method, endpoint.path)
     # 构造 Prompt
     params = {
         "method": endpoint.method,
@@ -128,7 +233,10 @@ def generate_cases_for_endpoint(endpoint) -> List[Dict]:
         "summary": endpoint.summary or "",
         "parameters": json.dumps(endpoint.parameters, ensure_ascii=False) if endpoint.parameters else "无",
         "request_body": json.dumps(endpoint.request_body, ensure_ascii=False) if endpoint.request_body else "无",
-        "responses": json.dumps(endpoint.responses, ensure_ascii=False) if endpoint.responses else "无"
+        "responses": json.dumps(endpoint.responses, ensure_ascii=False) if endpoint.responses else "无",
+        "required_fields": json.dumps(constraints["required_fields"], ensure_ascii=False) if constraints["required_fields"] else "无",
+        "success_example": json.dumps(constraints["success_example"], ensure_ascii=False) if constraints["success_example"] else "无",
+        "error_responses": json.dumps(constraints["error_responses"], ensure_ascii=False) if constraints["error_responses"] else "无"
     }
 
     # 生成正向用例
