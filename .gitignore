@@ -6,3 +6,5 @@ allure-report/
 allure-results/
 *.db
 .pytest_cache/
+# 项目文档仅本地使用，不上传远端
+TECH_DOC.md
