@@ -1,22 +1,25 @@
 import sys
 import os
-from app.services.notifier import send_dingtalk_notification
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from app.logging_config import get_logger
+from app.services.notifier import send_dingtalk_notification
 from app.database import SessionLocal
 from app.services.swagger_parser import load_swagger_from_url, extract_endpoints
 from app.models import APIEndpoint, TestCase, ExecutionRecord
-from app.services.ai_generator import generate_cases_for_endpoint
+from app.services.ai_generator import generate_cases_for_endpoints_batch
 from app.services.test_executor import execute_tests
+
+logger = get_logger("run_pipeline")
 
 def run_full_pipeline(swagger_url: str):
     """一键执行完整流水线：解析 -> 生成 -> 执行"""
     db = SessionLocal()
     try:
-        print("[1/4] 解析 Swagger 文档...")
+        logger.info("[1/4] 解析 Swagger 文档...")
         swagger_data = load_swagger_from_url(swagger_url)
         endpoints = extract_endpoints(swagger_data)
-        print(f"  解析到 {len(endpoints)} 个接口")
+        logger.info("解析到 %d 个接口", len(endpoints))
 
         # 可选：清空旧数据，避免重复累积
         db.query(ExecutionRecord).delete()
@@ -28,39 +31,34 @@ def run_full_pipeline(swagger_url: str):
         for ep in endpoints:
             db.add(APIEndpoint(**ep))
         db.commit()
-        print("  接口元数据已入库")
+        logger.info("接口元数据已入库")
 
-        print("[2/4] 生成测试用例...")
+        logger.info("[2/4] 生成测试用例...")
         all_endpoints = db.query(APIEndpoint).all()
         total_cases = 0
+        # 并发生成。ORM 对象的标量列(已加载)可被线程安全读取，DB 写入只在本线程进行
+        results = generate_cases_for_endpoints_batch(all_endpoints, max_workers=4)
         for ep in all_endpoints:
-            try:
-                cases = generate_cases_for_endpoint(ep)
-                for case_data in cases:
-                    db.add(TestCase(api_id=ep.id, **case_data))
-                total_cases += len(cases)
-                print(f"  接口 '{ep.name}' 生成 {len(cases)} 条用例")
-            except Exception as e:
-                print(f"  接口 '{ep.name}' 生成失败: {e}")
+            cases = results.get(ep.id, [])
+            for case_data in cases:
+                db.add(TestCase(api_id=ep.id, **case_data))
+            total_cases += len(cases)
+            logger.info("接口 '%s' 生成 %d 条用例", ep.name, len(cases))
         db.commit()
-        print(f"  共生成 {total_cases} 条测试用例")
+        logger.info("共生成 %d 条测试用例", total_cases)
 
-        print("[3/4] 执行测试...")
-        summary = execute_tests(db)  # 执行所有用例
-        print(f"  执行完成: 总数={summary['total']}, 通过={summary['passed']}, 失败={summary['failed']}")
+        logger.info("[3/4] 执行测试并生成报告...")
+        summary = execute_tests(db)  # 执行所有用例并生成 Allure 报告
+        logger.info("执行完成: 总数=%s, 通过=%s, 失败=%s", summary['total'], summary['passed'], summary['failed'])
+        logger.info("报告已生成，请打开 allure-report/index.html 查看")
 
-        print("[4/4] 生成 Allure 报告...")
-        # 报告已在 execute_tests 内部生成到 backend/allure-report
-        print("  报告已生成，请打开 backend/allure-report/index.html 查看")
-        # ... 在生成报告后
-        print("[5/5] 发送钉钉通知...")
-        send_dingtalk_notification(summary, report_path="backend/allure-report/index.html")
+        logger.info("[4/4] 发送钉钉通知...")
+        send_dingtalk_notification(summary, report_path="allure-report/index.html")
 
         return summary
     finally:
         db.close()
 
 if __name__ == "__main__":
-    # 使用 Petstore Swagger 作为示例，也可以改为本地文件路径
-    swagger_url = "https://petstore.swagger.io/v2/swagger.json"
+    swagger_url = os.getenv("SWAGGER_URL", "https://petstore.swagger.io/v2/swagger.json")
     run_full_pipeline(swagger_url)

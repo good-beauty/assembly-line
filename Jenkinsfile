@@ -11,6 +11,15 @@ pipeline {
             }
         }
 
+        stage('Unit Tests') {
+            steps {
+                script {
+                    // 单元测试门禁：tests 已随 backend 打入镜像 /app/tests
+                    sh 'docker exec -w /app test-pipeline-app python -m pytest tests/ -q --tb=short'
+                }
+            }
+        }
+
         stage('Run Pipeline') {
             steps {
                 script {
