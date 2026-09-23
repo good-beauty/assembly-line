@@ -7,4 +7,7 @@ def test_{{ test_case.name }}():
     payload = {{ test_case.payload }}
     method = "{{ test_case.method | lower }}"
     response = requests.request(method, url, headers=headers, json=payload)
-    assert response.status_code == {{ test_case.expected_status }}
+    assert response.status_code == {{ test_case.expected_status }}, f"expected {{ test_case.expected_status }}, got {response.status_code}"
+{% for assertion in test_case.assertion_lines %}
+    {{ assertion }}
+{% endfor %}

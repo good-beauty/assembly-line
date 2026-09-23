@@ -8,19 +8,23 @@ from collections import Counter
 from datetime import datetime
 from sqlalchemy.orm import Session
 from jinja2 import Environment, FileSystemLoader
+from typing import List, Dict
+from pathlib import Path
 from ..models import TestCase, ExecutionRecord
 from dotenv import load_dotenv
+from ..logging_config import get_logger
 
-load_dotenv()
+logger = get_logger("test_executor")
+
+# 统一从项目根目录加载 .env（而非当前工作目录），保证 ALLURE_CMD 等取到
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]  # backend/app/services/test_executor.py -> 项目根
+load_dotenv(_PROJECT_ROOT / ".env")
 
 IN_DOCKER = os.getenv("IN_DOCKER", "false").lower() == "true"
 BASE_URL = "http://mock:5000" if IN_DOCKER else "http://localhost:5000"
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), '..', 'templates')
-_windows_allure = r"D:\allure\allure-2.45.0\bin\allure.bat"
-if os.path.exists(_windows_allure):
-    ALLURE_CMD = _windows_allure
-else:
-    ALLURE_CMD = "allure"
+# Allure 命令从环境变量读取，避免硬编码本机绝对路径
+ALLURE_CMD = os.getenv("ALLURE_CMD", "allure")
 ALLURE_RESULTS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-results')
 REPORT_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'allure-report')
 
@@ -51,6 +55,33 @@ def to_python_literal(obj):
     # 其他情况回退到 repr
     return repr(obj)
 
+def render_assertions(assertions) -> list:
+    """将 LLM 生成的断言转成安全、受控的 Python 断言行，避免代码注入与语法错误。
+
+    支持的断言格式（dict）：
+      - {"contains": "text"}          响应响应体包含指定文本
+      - {"field_exists": "petId"}     响应 JSON 中存在该字段
+      - {"field_equals": ["petId", 1]}响应 JSON 中指定字段值等于某值
+    其余格式一律忽略。
+    """
+    lines = []
+    if not isinstance(assertions, list):
+        return lines
+    for a in assertions:
+        if not isinstance(a, dict):
+            continue
+        if isinstance(a.get("contains"), str):
+            text = to_python_literal(a["contains"])
+            lines.append(f"assert {text} in response.text")
+        elif isinstance(a.get("field_exists"), str):
+            field = to_python_literal(a["field_exists"])
+            lines.append(f"assert {field} in response.json(), 'missing field {field}'")
+        elif (isinstance(a.get("field_equals"), list)
+              and len(a["field_equals"]) == 2):
+            field, expect = a["field_equals"]
+            lines.append(f"assert response.json().get({to_python_literal(field)}) == {to_python_literal(expect)}")
+    return lines
+
 def render_pytest_file(test_cases):
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
     template = env.get_template('pytest_template.j2')
@@ -72,15 +103,29 @@ def render_pytest_file(test_cases):
             "headers": headers_literal,
             "payload": payload_literal,
             "expected_status": case.expected_status,
-            "assertions": case.assertions  # 暂未使用
+            "assertion_lines": render_assertions(case.assertions)
         }
         test_func = template.render(test_case=case_dict)
         test_functions.append(test_func)
-    full_content = "import requests\nimport json\n\n" + "\n\n".join(test_functions)
+    reset_url = BASE_URL.rstrip("/") + "/__reset__"
+    # 每条用例执行前重置 Mock 预置状态，实现用例级隔离，
+    # 避免任一用例修改共享状态（如删除/创建资源）影响后续用例的判断
+    fixture_header = (
+        "import requests\n"
+        "import json\n"
+        "import pytest\n\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def _isolate_test_state():\n"
+        "    try:\n"
+        f"        requests.post({to_python_literal(reset_url)}, json={{}}, timeout=10)\n"
+        "    except Exception:\n"
+        "        pass\n\n"
+    )
+    full_content = fixture_header + "\n\n".join(test_functions)
     return full_content
 
 def parse_junit_results(junit_xml_path):
-    """解析 junit xml，返回 {case_id: status} 字典"""
+    """解析 junit xml，返回 {case_id: (status, error_message)} 字典"""
     tree = ET.parse(junit_xml_path)
     root = tree.getroot()
     results = {}
@@ -90,15 +135,21 @@ def parse_junit_results(junit_xml_path):
         parts = name.split('_')
         if len(parts) >= 2 and parts[0] == 'test' and parts[1].isdigit():
             case_id = int(parts[1])
-            if testcase.find('failure') is not None:
+            failure = testcase.find('failure')
+            error = testcase.find('error')
+            if failure is not None:
                 status = 'failed'
-            elif testcase.find('error') is not None:
+                message = (failure.get('message') or (failure.text or '').strip())[:500]
+            elif error is not None:
                 status = 'error'
+                message = (error.get('message') or (error.text or '').strip())[:500]
             elif testcase.find('skipped') is not None:
                 status = 'skipped'
+                message = None
             else:
                 status = 'passed'
-            results[case_id] = status
+                message = None
+            results[case_id] = (status, message)
     return results
 
 def execute_tests(db: Session, test_case_ids=None):
@@ -131,20 +182,15 @@ def execute_tests(db: Session, test_case_ids=None):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=tmpdir)
 
-        print("=== PYTEST STDOUT ===")
-        print(result.stdout)
-        print("=== PYTEST STDERR ===")
-        print(result.stderr)
+        logger.debug("=== PYTEST STDOUT ===\n%s", result.stdout)
+        logger.debug("=== PYTEST STDERR ===\n%s", result.stderr)
 
         case_status_map = parse_junit_results(junit_xml_path)
-        print(f"Status map: {case_status_map}")
+        logger.debug("Status map: %s", case_status_map)
 
         records = []
         for case in cases:
-            status = case_status_map.get(case.id, 'failed')
-            error_message = None
-            if status != 'passed':
-                error_message = result.stderr[:500] if result.stderr else None
+            status, error_message = case_status_map.get(case.id, ('failed', None))
             record = ExecutionRecord(
                 test_case_id=case.id,
                 status=status,
@@ -157,17 +203,20 @@ def execute_tests(db: Session, test_case_ids=None):
         db.commit()
 
         os.makedirs(REPORT_DIR, exist_ok=True)
+        # 使用参数列表而非 shell=True，避免命令注入风险
         try:
-            cmd_str = f'"{ALLURE_CMD}" generate "{allure_results_dir}" -o "{REPORT_DIR}" --clean'
-            subprocess.run(cmd_str, shell=True, check=True, capture_output=True, text=True)
+            result_allure = subprocess.run(
+                [ALLURE_CMD, "generate", allure_results_dir, "-o", REPORT_DIR, "--clean"],
+                check=True, capture_output=True, text=True
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning("Allure 报告生成失败: %s", e)
+            logger.debug("Allure STDOUT: %s", e.stdout)
+            logger.debug("Allure STDERR: %s", e.stderr)
         except Exception as e:
-            print(f"Allure 报告生成失败: {e}")
-            if hasattr(e, 'stdout'):
-                print(f"STDOUT: {e.stdout}")
-            if hasattr(e, 'stderr'):
-                print(f"STDERR: {e.stderr}")
+            logger.error("Allure 报告生成失败: %s", e)
 
-        status_counter = Counter(case_status_map.values())
+        status_counter = Counter(status for status, _ in case_status_map.values())
         summary = {
             "total": len(cases),
             "passed": status_counter.get('passed', 0),

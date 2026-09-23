@@ -6,19 +6,29 @@ generate_mock.py
 import json
 import re
 import os
+import sys
 from typing import Any, Dict, List
 
-SPEC_PATH = "specs/petstore.json"
-OUTPUT_PATH = "mock_server/main.py"
+# 使脚本可同时从项目根目录或 scripts/ 目录运行
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from backend.app.services.spec_normalizer import (
+    is_openapi3, get_request_body, get_response_example,
+)
+# 将统一结果转回 generate_mock 期望的 {required, content_type} 结构
+def _required_and_ct(spec, operation):
+    rb = get_request_body(spec, operation)
+    return {"required": rb.get("required", []), "content_type": rb.get("content_type", "application/json")}
+
+SPEC_PATH = os.path.join(PROJECT_ROOT, "specs", "petstore.json")
+OUTPUT_PATH = os.path.join(PROJECT_ROOT, "mock_server", "main.py")
 
 
 def load_spec(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def is_openapi3(spec: Dict) -> bool:
-    return "openapi" in spec
 
 
 def extract_path_params(path: str) -> List[str]:
@@ -27,47 +37,13 @@ def extract_path_params(path: str) -> List[str]:
 
 
 def extract_request_body_fields(spec: Dict, operation: Dict) -> Dict:
-    """提取请求体必填字段"""
-    if is_openapi3(spec):
-        # OpenAPI 3.0
-        rb = operation.get("requestBody", {})
-        content = rb.get("content", {})
-        for ct, ct_data in content.items():
-            schema = ct_data.get("schema", {})
-            if "required" in schema:
-                return {"required": schema["required"], "content_type": ct}
-    else:
-        # Swagger 2.0
-        for param in operation.get("parameters", []):
-            if param.get("in") == "body":
-                schema = param.get("schema", {})
-                return {"required": schema.get("required", []), "content_type": "application/json"}
-    return {"required": [], "content_type": "application/json"}
+    """提取请求体必填字段（委托规范化层，统一 Swagger2/OpenAPI3）"""
+    return _required_and_ct(spec, operation)
 
 
 def get_success_response(spec: Dict, operation: Dict) -> Dict:
-    """提取 200 响应的示例"""
-    responses = operation.get("responses", {})
-    for code in ["200", "201"]:
-        if code in responses:
-            resp = responses[code]
-            if is_openapi3(spec):
-                content = resp.get("content", {})
-                for ct, ct_data in content.items():
-                    schema = ct_data.get("schema", {})
-                    if "example" in schema:
-                        return schema["example"]
-                # 从 components 中查找 $ref
-                schema = list(content.values())[0].get("schema", {}) if content else {}
-                if "$ref" in schema:
-                    ref_name = schema["$ref"].split("/")[-1]
-                    components = spec.get("components", {}).get("schemas", {})
-                    return components.get(ref_name, {})
-            else:
-                schema = resp.get("schema", {})
-                if "example" in schema:
-                    return schema["example"]
-    return {}
+    """提取 200 响应的示例（委托规范化层）"""
+    return get_response_example(spec, operation.get("responses", {}) or {})
 
 
 def generate_main(spec: Dict) -> str:

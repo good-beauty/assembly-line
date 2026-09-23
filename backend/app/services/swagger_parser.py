@@ -2,6 +2,7 @@ import json
 import yaml
 import requests
 from typing import Dict, List
+from .spec_normalizer import iter_endpoints
 
 def load_swagger_content(content: bytes, filename: str) -> Dict:
     """根据文件后缀解析 JSON 或 YAML"""
@@ -20,21 +21,18 @@ def load_swagger_from_url(url: str) -> Dict:
         return resp.json()
 
 def extract_endpoints(swagger_data: Dict) -> List[Dict]:
-    """提取接口元数据"""
+    """提取接口元数据（统一 Swagger2/OpenAPI3）"""
     endpoints = []
-    paths = swagger_data.get("paths", {})
-    for path, methods in paths.items():
-        for method, operation in methods.items():
-            if method.lower() not in ["get", "post", "put", "delete", "patch"]:
-                continue
-            endpoints.append({
-                "name": operation.get("summary") or operation.get("operationId") or f"{method.upper()} {path}",
-                "method": method.upper(),
-                "path": path,
-                "summary": operation.get("summary"),
-                "description": operation.get("description"),
-                "parameters": operation.get("parameters", []),
-                "request_body": operation.get("requestBody"),
-                "responses": operation.get("responses", {})
-            })
+    for ep in iter_endpoints(swagger_data):
+        endpoints.append({
+            "name": ep.get("summary") or ep.get("operationId") or f"{ep['method']} {ep['path']}",
+            "method": ep["method"],
+            "path": ep["path"],
+            "summary": ep.get("summary"),
+            "description": ep.get("description"),
+            # 保留原始参数供 LLM 参考；request_body/responses 存统一后的结构
+            "parameters": ep["parameters"],
+            "request_body": ep["request_body"],
+            "responses": ep["responses"],
+        })
     return endpoints
